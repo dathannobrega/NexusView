@@ -1,0 +1,81 @@
+name: Release
+
+# One self-contained release pipeline.
+#
+# On every push to main, Release Please reads the Conventional Commits and keeps
+# a "Release PR" (version bump + CHANGELOG). When that PR is merged it creates
+# the `vX.Y.Z` tag and GitHub Release using the built-in GITHUB_TOKEN — no PAT.
+# The .dmg is then built by a job in THIS SAME workflow run (gated on
+# `release_created`), so we never rely on a PAT or on a tag triggering another
+# workflow (a GITHUB_TOKEN-created tag intentionally does not).
+#
+# One-time repo setting required:
+#   Settings ▸ Actions ▸ General ▸ Workflow permissions
+#     • Read and write permissions
+#     • Allow GitHub Actions to create and approve pull requests  ✅
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # Uses the default GITHUB_TOKEN (has contents:write + pull-requests:write
+          # from the permissions block above). No personal access token needed.
+
+  build-dmg:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: macos-14 # Apple Silicon (arm64)
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Set up Rust (stable, arm64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('engine/**/Cargo.toml') }}
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build the .dmg
+        run: |
+          TAG="${{ needs.release-please.outputs.tag_name }}"
+          ./scripts/make_dmg.sh "${TAG#v}"
+
+      - name: Attach the .dmg to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: build/NexusView-*.dmg
+          fail_on_unmatched_files: true
+
+# Distribution note: the .dmg is ad-hoc signed (Gatekeeper: right-click ▸ Open on
+# first launch). For public distribution, add Developer-ID signing + notarization
+# here using repo secrets (cert .p12, Apple ID, team id, app-specific password).

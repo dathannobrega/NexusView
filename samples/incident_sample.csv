@@ -1,0 +1,21 @@
+timestamp,host,user,event_id,severity,message
+2026-06-05T08:00:01Z,web01,jsmith,4624,INFO,"Logon success, type=2"
+2026-06-05T08:00:04Z,web01,jsmith,4688,INFO,Process created: explorer.exe
+2026-06-05T08:01:12Z,web02,admin,4625,WARN,Logon failure: bad password
+2026-06-05T08:01:13Z,web02,admin,4625,WARN,Logon failure: bad password
+2026-06-05T08:01:15Z,web02,admin,4625,ERROR,Account lockout threshold reached
+2026-06-05T08:02:30Z,db01,svc_sql,4672,INFO,Special privileges assigned
+2026-06-05T08:03:44Z,web01,jsmith,5140,INFO,Network share accessed: \\\\fileserver\\hr
+2026-06-05T08:04:02Z,db01,svc_sql,4688,CRITICAL,"Process created: powershell.exe -enc SQBFAFgA"
+2026-06-05T08:04:05Z,db01,svc_sql,4688,CRITICAL,Suspicious encoded command detected
+2026-06-05T08:05:19Z,web03,mwilson,4624,INFO,"Logon success, type=10 (RDP)"
+2026-06-05T08:05:48Z,web03,mwilson,4688,WARN,Process created: cmd.exe /c whoami
+2026-06-05T08:06:55Z,fw01,system,1,DENIED,Outbound connection blocked to 185.220.101.5:443
+2026-06-05T08:07:10Z,fw01,system,1,DENIED,Outbound connection blocked to 185.220.101.5:443
+2026-06-05T08:08:33Z,web01,jsmith,4634,INFO,Logoff
+2026-06-05T08:09:41Z,db01,svc_sql,4720,CRITICAL,User account created: bkdoor_svc
+2026-06-05T08:10:02Z,db01,bkdoor_svc,4624,ERROR,"Logon success, type=3 from 185.220.101.5"
+2026-06-05T08:11:27Z,web02,admin,4625,WARN,Logon failure: bad password
+2026-06-05T08:12:38Z,web03,mwilson,4688,INFO,Process created: outlook.exe
+2026-06-05T08:13:50Z,fw01,system,2,ALLOW,Inbound HTTPS from 10.0.0.14
+2026-06-05T08:15:09Z,db01,bkdoor_svc,4674,CRITICAL,Privileged operation on lsass.exe

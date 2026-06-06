@@ -1,0 +1,20 @@
+[package]
+name = "nexus-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "C-ABI bridge over nexus-core for the Swift/AppKit front end."
+
+[lib]
+name = "nexus_ffi"
+# staticlib: self-contained link into the Swift binary (no rpath headaches).
+# cdylib: optional shared library for tooling / the MCP host.
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+nexus-core.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

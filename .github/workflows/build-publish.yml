@@ -1,0 +1,58 @@
+name: Build & Publish DMG
+
+# Reliable, release-please-independent path: pushing a version tag yourself (or
+# running this manually) builds the .dmg and creates/updates the GitHub Release.
+# A tag YOU push triggers this workflow (unlike a tag created by GITHUB_TOKEN),
+# and creating a Release only needs `contents: write` — no PR permission, no PAT.
+#
+#   git tag v0.1.1 && git push origin v0.1.1
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v0.1.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14 # Apple Silicon (arm64)
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Set up Rust (stable, arm64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('engine/**/Cargo.toml') }}
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build the .dmg
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          ./scripts/make_dmg.sh "${TAG#v}"
+
+      - name: Create / update the GitHub Release with the DMG
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: build/NexusView-*.dmg
+          fail_on_unmatched_files: true

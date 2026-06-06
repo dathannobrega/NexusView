@@ -1,0 +1,31 @@
+[package]
+name = "nexus-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "NexusView forensic triage engine: mmap, zero-load offset indexing, parallel search."
+
+[lib]
+# Pure Rust library, interface-agnostic (RNF-04). Reusable by the FFI layer,
+# a future CLI, and the MCP server without any UI dependency.
+crate-type = ["rlib"]
+
+[dependencies]
+memmap2.workspace = true
+memchr.workspace = true
+rayon.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+encoding_rs.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"

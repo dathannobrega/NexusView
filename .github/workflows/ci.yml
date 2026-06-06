@@ -1,0 +1,37 @@
+name: CI
+
+# Fast gate on every push/PR: the Rust engine (pure, builds on Linux) is tested
+# and linted. The Swift app is built only on macOS during a release (see
+# build-publish.yml), since AppKit can't compile on Linux.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('engine/**/Cargo.toml') }}
+      - name: Format check
+        working-directory: engine
+        run: cargo fmt --all --check
+      - name: Clippy
+        working-directory: engine
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        working-directory: engine
+        run: cargo test --workspace

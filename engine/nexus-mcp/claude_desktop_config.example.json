@@ -1,0 +1,9 @@
+{
+  "_comment": "Example MCP client config (e.g. Claude Desktop's claude_desktop_config.json). Point `command` at the built nexus-mcp binary; the agent then has the open_timeline / search / get_rows / column_distribution tools.",
+  "mcpServers": {
+    "nexusview": {
+      "command": "/Users/dathan/Github/NexusView/engine/target/release/nexus-mcp",
+      "args": []
+    }
+  }
+}

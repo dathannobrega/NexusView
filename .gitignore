@@ -1,0 +1,17 @@
+# Rust
+/engine/target/
+**/*.rs.bk
+
+# SwiftPM
+/app/.build/
+/app/.swiftpm/
+*.xcodeproj
+
+# Build artifacts copied for linking
+/app/Sources/CNexusEngine/include/nexusview.h.bak
+
+# Build output (.app bundle, .dmg, generated iconset)
+/build/
+
+# macOS
+.DS_Store

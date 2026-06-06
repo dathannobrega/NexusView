@@ -1,0 +1,4 @@
+module CNexusEngine {
+    header "nexusview.h"
+    export *
+}
