@@ -1,11 +1,20 @@
 //! Field splitting within a single record (RF-01).
 //!
-//! The engine is line-offset indexed (RF-02), so one newline-terminated line is
-//! one record. Splitting therefore operates on a single line's bytes and honors
-//! the quote character so delimiters *inside* quotes are not treated as field
-//! separators. Embedded newlines inside quoted fields are intentionally not
-//! supported — that is the correct trade-off for the offset-mapping
-//! architecture and matches how newline-delimited DFIR telemetry behaves.
+//! The engine is record-offset indexed (RF-02): [`crate::index::LineIndex`]
+//! hands out one *record* at a time, where a record is normally one physical
+//! line but may span several when a quoted field contains newlines (RFC 4180).
+//! Splitting operates on a single record's bytes with the same quoting grammar
+//! the indexer uses — the two must agree or a record correctly joined by the
+//! index would be mis-split here:
+//!
+//! - A quote is only special at the **start of a field** (record start or right
+//!   after a delimiter). A field that starts with `quote` is a quoted field.
+//! - Inside a quoted field, a doubled quote (`""`) is an escaped literal quote;
+//!   delimiters and newlines are field data.
+//! - A quote anywhere else (mid-field, or after the closing quote) is literal
+//!   data. This lenient reading keeps stray quotes in unquoted DFIR fields
+//!   (command lines, paths) from corrupting the rest of the record.
+//! - An unterminated quoted field runs to the end of the record.
 //!
 //! Splitting yields byte ranges (no allocation); callers materialize a `String`
 //! only for the cells they actually need (visible viewport / export rows).
@@ -17,35 +26,41 @@ pub type FieldRanges = SmallVec<[(usize, usize); 32]>;
 
 /// Split `line` into field ranges, invoking `emit(start, end)` for each field.
 ///
-/// Ranges are relative to `line`. Quoted regions (delimited by `quote`) suppress
-/// delimiter handling; a doubled quote (`""`) inside a quoted field is an escaped
-/// quote and does not end the field.
+/// Ranges are relative to `line` and include any surrounding quotes (use
+/// [`field_value`] / [`unquote_borrowed`] to strip them). See the module docs
+/// for the exact quoting grammar.
 pub fn split_fields<F: FnMut(usize, usize)>(line: &[u8], delim: u8, quote: u8, mut emit: F) {
     let n = line.len();
     let mut i = 0;
     let mut field_start = 0;
-    let mut in_quotes = false;
 
     while i < n {
-        let b = line[i];
-        if in_quotes {
-            if b == quote {
-                if i + 1 < n && line[i + 1] == quote {
-                    i += 2; // escaped quote
-                    continue;
+        // Loop invariant: `i` is at the first byte of a field here.
+        if line[i] == quote {
+            // Quoted field: scan to its closing quote; `""` is an escaped
+            // literal quote. Newlines inside are field data.
+            i += 1;
+            while i < n {
+                if line[i] == quote {
+                    if line.get(i + 1) == Some(&quote) {
+                        i += 2; // escaped quote
+                        continue;
+                    }
+                    i += 1; // step past the closing quote
+                    break;
                 }
-                in_quotes = false;
+                i += 1;
             }
+        }
+        // Unquoted field body — or the (malformed) tail after a closing quote.
+        // Quotes seen here are literal data.
+        while i < n && line[i] != delim {
             i += 1;
-        } else if b == quote {
-            in_quotes = true;
-            i += 1;
-        } else if b == delim {
+        }
+        if i < n {
             emit(field_start, i);
             i += 1;
             field_start = i;
-        } else {
-            i += 1;
         }
     }
     emit(field_start, n);
@@ -67,36 +82,39 @@ pub fn count_fields(line: &[u8], delim: u8, quote: u8) -> usize {
 
 /// Byte range of the `n`-th field (0-based), stopping as soon as it is found —
 /// avoids splitting the whole line when only one column is needed (scoped search).
+/// Same quoting grammar as [`split_fields`].
 pub fn field_at(line: &[u8], delim: u8, quote: u8, n: usize) -> Option<(usize, usize)> {
     let len = line.len();
     let mut i = 0;
     let mut field_start = 0;
     let mut index = 0;
-    let mut in_quotes = false;
 
     while i < len {
-        let b = line[i];
-        if in_quotes {
-            if b == quote {
-                if i + 1 < len && line[i + 1] == quote {
-                    i += 2;
-                    continue;
+        // Loop invariant: `i` is at the first byte of a field here.
+        if line[i] == quote {
+            i += 1;
+            while i < len {
+                if line[i] == quote {
+                    if line.get(i + 1) == Some(&quote) {
+                        i += 2; // escaped quote
+                        continue;
+                    }
+                    i += 1; // step past the closing quote
+                    break;
                 }
-                in_quotes = false;
+                i += 1;
             }
+        }
+        while i < len && line[i] != delim {
             i += 1;
-        } else if b == quote {
-            in_quotes = true;
-            i += 1;
-        } else if b == delim {
+        }
+        if i < len {
             if index == n {
                 return Some((field_start, i));
             }
             index += 1;
             i += 1;
             field_start = i;
-        } else {
-            i += 1;
         }
     }
     if index == n {
@@ -196,5 +214,75 @@ mod tests {
     fn pipe_bodyfile() {
         let line = b"0|/etc/passwd|12|r--|0|0|1024|100|200|300|400";
         assert_eq!(count_fields(line, b'|', b'"'), 11);
+    }
+
+    #[test]
+    fn multiline_quoted_field_value() {
+        // The record-aware index (RF-02) hands us a record whose quoted field
+        // spans physical lines; the newline is field data.
+        assert_eq!(
+            fields(b"a,\"x\ny\",b", b','),
+            vec!["a".to_string(), "x\ny".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn crlf_inside_quoted_field_is_preserved() {
+        assert_eq!(
+            fields(b"a,\"x\r\ny\"", b','),
+            vec!["a".to_string(), "x\r\ny".to_string()]
+        );
+    }
+
+    #[test]
+    fn mid_field_quote_is_literal() {
+        // RFC 4180 lenient: a quote that does not start the field is data and
+        // must not swallow the following delimiter.
+        assert_eq!(
+            fields(b"x,ab\"cd,e", b','),
+            vec!["x".to_string(), "ab\"cd".to_string(), "e".to_string()]
+        );
+    }
+
+    #[test]
+    fn junk_after_closing_quote_is_literal() {
+        assert_eq!(
+            fields(b"\"a\"b,c", b','),
+            vec!["\"a\"b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn unterminated_quote_runs_to_record_end() {
+        assert_eq!(
+            fields(b"a,\"bc", b','),
+            vec!["a".to_string(), "\"bc".to_string()]
+        );
+    }
+
+    #[test]
+    fn field_at_agrees_with_field_ranges() {
+        let lines: &[&[u8]] = &[
+            b"a,b,c",
+            b"a,\"x\ny\",b",
+            b"x,ab\"cd,e",
+            b"\"a\"b,c",
+            b"a,\"he said \"\"hi\"\"\",x",
+            b",,",
+            b"\"unterminated",
+            b"",
+        ];
+        for line in lines {
+            let ranges = field_ranges(line, b',', b'"');
+            for (i, &r) in ranges.iter().enumerate() {
+                assert_eq!(
+                    field_at(line, b',', b'"', i),
+                    Some(r),
+                    "line {:?} field {i}",
+                    String::from_utf8_lossy(line)
+                );
+            }
+            assert_eq!(field_at(line, b',', b'"', ranges.len()), None);
+        }
     }
 }

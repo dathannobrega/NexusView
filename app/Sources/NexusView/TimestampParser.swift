@@ -52,33 +52,96 @@ enum TimestampParser {
     }
 
     /// Display string for a value in the given mode, or `nil` to keep the raw text.
+    /// Called per visible timestamp cell while rendering, so the formatters are
+    /// cached (immutable after init — safe to share; `DateFormatter` is
+    /// thread-safe on macOS 10.9+).
     static func convert(_ value: String, format: TimeFormat, mode: TimeZoneMode) -> String? {
         guard mode != .raw, let date = parse(value, format: format) else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         if mode == .utc {
-            formatter.timeZone = TimeZone(identifier: "UTC")
-            return formatter.string(from: date) + " UTC"
+            return utcDisplayFormatter.string(from: date) + " UTC"
         }
-        formatter.timeZone = .current
+        // The local formatter is rebuilt per call so a system timezone change
+        // mid-session is always honored.
+        let formatter = makeDisplayFormatter(timeZone: .current)
         return formatter.string(from: date) + " " + (TimeZone.current.abbreviation() ?? "local")
     }
 
-    private static func parseISO(_ value: String) -> Date? {
-        let normalized = value.replacingOccurrences(of: " ", with: "T")
+    private static let utcDisplayFormatter = makeDisplayFormatter(
+        timeZone: TimeZone(identifier: "UTC")
+    )
+
+    private static func makeDisplayFormatter(timeZone: TimeZone?) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.timeZone = timeZone
+        return formatter
+    }
+
+    /// Matches one trailing timezone-name annotation: an optional `T` or space
+    /// separator followed by `UTC` or `GMT`. Anchored to the end so nothing in
+    /// the middle of a value can ever match.
+    private static let trailingTimezoneAnnotation = try! NSRegularExpression(
+        pattern: #"[ T]?(?:UTC|GMT)$"#,
+        options: [.caseInsensitive]
+    )
+
+    /// Strip timezone *annotations* some exporters glue after an already
+    /// complete time, e.g. Sophos datalake's `2026-06-10T14:48:57ZTUTC`, or
+    /// `… 14:48:57 UTC` / `…57TUTC` / `…57GMT`. Applied repeatedly so stacked
+    /// annotations (`…57Z UTC`) also reduce. A bare `Z` and numeric offsets
+    /// (`+02:00`) are kept — the ISO parser consumes those.
+    private static func stripTimezoneAnnotations(_ value: String) -> String {
+        var v = value
+        while true {
+            let range = NSRange(v.startIndex..., in: v)
+            guard let match = trailingTimezoneAnnotation.firstMatch(in: v, range: range),
+                  let found = Range(match.range, in: v), !found.isEmpty
+            else { return v }
+            v.removeSubrange(found)
+        }
+    }
+
+    // Parsing formatters, cached for the render path (immutable after init).
+    private static let isoFractional: ISO8601DateFormatter = {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = iso.date(from: normalized) { return date }
+        return iso
+    }()
+    private static let isoBasic: ISO8601DateFormatter = {
+        let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
-        if let date = iso.date(from: normalized) { return date }
-
-        // No timezone present → assume UTC.
+        return iso
+    }()
+    private static let utcNoZoneFormatters: [DateFormatter] = ["yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss"].map { pattern in
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")
-        for pattern in ["yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss"] {
-            formatter.dateFormat = pattern
+        formatter.dateFormat = pattern
+        return formatter
+    }
+
+    /// Full anchored shape of an ISO-8601 date-time after annotation stripping:
+    /// date, `T`, time, optional fractional seconds, optional `Z` or numeric
+    /// offset. Foundation's ISO parsers are lenient about trailing junk on some
+    /// macOS versions (`…57UTCX` parses as UTC); anchoring here keeps the
+    /// accepted grammar strict and identical across versions — anything else
+    /// stays raw rather than being guessed at.
+    private static let isoShape = try! NSRegularExpression(
+        pattern: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?)?$"#
+    )
+
+    private static func parseISO(_ value: String) -> Date? {
+        let cleaned = stripTimezoneAnnotations(value)
+        let normalized = cleaned.replacingOccurrences(of: " ", with: "T")
+        let range = NSRange(normalized.startIndex..., in: normalized)
+        guard isoShape.firstMatch(in: normalized, range: range) != nil else { return nil }
+
+        if let date = isoFractional.date(from: normalized) { return date }
+        if let date = isoBasic.date(from: normalized) { return date }
+
+        // Shape matched but carried no timezone → assume UTC.
+        for formatter in utcNoZoneFormatters {
             if let date = formatter.date(from: normalized) { return date }
         }
         return nil

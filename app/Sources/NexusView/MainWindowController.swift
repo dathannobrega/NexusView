@@ -594,6 +594,19 @@ final class MainWindowController: NSWindowController,
         return value
     }
 
+    /// Single-line rendition of a cell value for the grid rows: embedded line
+    /// breaks (legal inside quoted CSV fields, RFC 4180) are shown as ⏎ so the
+    /// whole value stays visible and recognizably multi-line. Copies, exports,
+    /// and the detail panel keep the real newlines. `\r\n` is a single Swift
+    /// `Character`, so the cheap guard scans unicode scalars.
+    private func singleLine(_ value: String) -> String {
+        guard value.unicodeScalars.contains(where: { $0 == "\n" || $0 == "\r" }) else { return value }
+        return value
+            .replacingOccurrences(of: "\r\n", with: " ⏎ ")
+            .replacingOccurrences(of: "\n", with: " ⏎ ")
+            .replacingOccurrences(of: "\r", with: " ⏎ ")
+    }
+
     // MARK: Detail panel (selected-row fields)
 
     func tableViewSelectionDidChange(_ notification: Notification) { updateDetail() }
@@ -813,7 +826,7 @@ final class MainWindowController: NSWindowController,
             guard let colIndex = dataColumnIndex(column.identifier) else { return nil }
             let values = cachedRowValues(engine: engine, view: view, row: row)
             let raw = colIndex < values.count ? values[colIndex] : ""
-            let text = displayValue(raw, col: colIndex)
+            let text = singleLine(displayValue(raw, col: colIndex))
             let selected = cellSelection.contains(CellRef(row: row, col: colIndex))
             let cell = reusableGridCell(in: tableView, id: column.identifier)
             cell.configure(text, color: format.color(for: text) ?? .labelColor, selected: selected)
@@ -865,7 +878,7 @@ final class MainWindowController: NSWindowController,
                 field.stringValue = ""
             }
         } else if let dataRow = tree.rowId(value) {
-            let text = engine.cell(dataRow: dataRow, col: colIndex)
+            let text = singleLine(engine.cell(dataRow: dataRow, col: colIndex))
             field.stringValue = text
             field.textColor = format.color(for: text) ?? .labelColor
             field.font = Self.cellFont

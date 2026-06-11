@@ -40,8 +40,10 @@ impl Dataset {
     /// from the file head and a header row is assumed.
     pub fn open(path: impl AsRef<std::path::Path>, schema: Option<ParserSchema>) -> Result<Self> {
         let file = MappedFile::open(path)?;
-        let index = LineIndex::build(&file);
 
+        // The schema must be resolved before indexing: record boundaries are
+        // quote-aware (a newline inside a quoted field is field data, RFC 4180),
+        // and that scan needs the delimiter and quote bytes.
         let schema = schema.unwrap_or_else(|| {
             let bytes = file.bytes();
             let head = &bytes[..bytes.len().min(SNIFF_BYTES)];
@@ -50,6 +52,7 @@ impl Dataset {
 
         let delim = schema.delimiter_byte();
         let quote = schema.quote_byte();
+        let index = LineIndex::build_quoted(&file, delim, quote);
         let first_data_line = schema.skip_lines + usize::from(schema.has_header);
 
         let columns = Self::determine_columns(&file, &index, &schema, delim, quote)?;
@@ -109,6 +112,13 @@ impl Dataset {
                     }
                 })
                 .collect();
+            // A UTF-8 BOM glued to the first header cell would silently break
+            // column-scoped queries typed by name; strip it.
+            if let Some(first) = cols.first_mut() {
+                if let Some(stripped) = first.strip_prefix('\u{FEFF}') {
+                    *first = stripped.to_string();
+                }
+            }
             if cols.is_empty() {
                 cols.push("Column 1".to_string());
             }
@@ -456,6 +466,35 @@ mod tests {
 
         ds.set_tag(0, false);
         assert_eq!(ds.tagged_count(), 1);
+    }
+
+    #[test]
+    fn quoted_field_with_newlines_is_one_record() {
+        // Shape of real Sophos datalake exports: a quoted PID-list field
+        // spanning several physical lines.
+        let data: &[u8] = b"host,pids,user\n\
+            web01,\"18452:134256190834473343\n330:16480:134255987192750638\",alice\n\
+            web02,\"1:2\",bob\n";
+        let (ds, _t) = dataset_from(data, None);
+        assert_eq!(ds.row_count(), 2);
+        assert_eq!(ds.cell(0, 0), "web01");
+        assert_eq!(
+            ds.cell(0, 1),
+            "18452:134256190834473343\n330:16480:134255987192750638"
+        );
+        assert_eq!(ds.cell(0, 2), "alice");
+        assert_eq!(ds.cell(1, 0), "web02");
+        // Scoped search reaches content on the field's second physical line.
+        assert_eq!(ds.search("pids:134255987192750638").unwrap(), vec![0]);
+        assert_eq!(ds.search("user:bob").unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn bom_is_stripped_from_first_column_name() {
+        let data: &[u8] = b"\xEF\xBB\xBFhost,event\nweb01,login\n";
+        let (ds, _t) = dataset_from(data, None);
+        assert_eq!(ds.column_name(0), Some("host"));
+        assert_eq!(ds.search("host:web01").unwrap(), vec![0]);
     }
 
     #[test]

@@ -105,3 +105,56 @@ fn invalid_query_surfaces_error() {
     assert!(ds.search("/(/").is_err());
     assert!(ds.search("(a OR b").is_err());
 }
+
+#[test]
+fn multiline_quoted_records_full_pipeline() {
+    // Mirrors the shape of a Sophos datalake export: UTF-8 BOM, ISO timestamps
+    // carrying a trailing `TUTC` annotation, and quoted PID-list fields that
+    // span several physical lines (RFC 4180 embedded newlines).
+    let data: &[u8] = b"\xEF\xBB\xBFDevice,FirstSeen,Cmd,PIDs,LastSeen\n\
+        web01,2026-06-10T14:48:57ZTUTC,\"run a,b\",\"18452:134256190834473343\n\
+330:16480:134255987192750638\n\
+72:134254749000664849\",2026-06-11T02:38:03ZTUTC\n\
+        web02,2026-06-10T12:46:51ZTUTC,calc,14712:134255830517435285,2026-06-10T13:00:00ZTUTC\n";
+    let (ds, _t) = open(data, None);
+
+    // Structure: BOM stripped from the first column, 2 records — not 4 lines.
+    assert_eq!(ds.column_count(), 5);
+    assert_eq!(ds.column_name(0), Some("Device"));
+    assert_eq!(ds.row_count(), 2);
+
+    // The multi-line field is a single cell with its newlines preserved.
+    let pids = ds.cell(0, 3);
+    assert_eq!(pids.lines().count(), 3);
+    assert!(pids.contains("330:16480:134255987192750638"));
+    assert_eq!(ds.cell(0, 4), "2026-06-11T02:38:03ZTUTC");
+
+    // Search reaches continuation lines, scoped and global.
+    assert_eq!(ds.search("PIDs:134254749000664849").unwrap(), vec![0]);
+    assert_eq!(ds.search("14712").unwrap(), vec![1]);
+
+    // Sort by FirstSeen: ISO text keys order chronologically.
+    let sorted = ds.sort(
+        &ds.view_all(),
+        &[nexus_core::SortKey {
+            col: 1,
+            ascending: true,
+        }],
+    );
+    assert_eq!(ds.view_cell(&sorted, 0, 0), "web02");
+
+    // Export the view as CSV and re-open it: the multi-line cell must
+    // round-trip byte-identically.
+    let out = tempfile::NamedTempFile::new().unwrap();
+    ds.export(
+        &ds.view_all(),
+        nexus_core::export::Format::Csv,
+        out.path(),
+        &[],
+    )
+    .unwrap();
+    let ds2 = Dataset::open(out.path(), None).unwrap();
+    assert_eq!(ds2.row_count(), 2);
+    assert_eq!(ds2.cell(0, 3), pids);
+    assert_eq!(ds2.cell(1, 0), "web02");
+}
